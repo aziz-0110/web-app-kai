@@ -203,12 +203,12 @@ class WebServer:
                         cmd = json.loads(data)
 
                         # --- TAMBAHAN UNTUK THRESHOLD & LOGGING ---
-                        # action = cmd.get("action")
-                        # if action == "set_threshold":
-                        #     # Hanya print/log, lalu biarkan masuk ke queue
-                        #     print(
-                        #         f"[WEBSOCKET] Menerima perubahan threshold: {cmd.get('value')}"
-                        #     )
+                        action = cmd.get("action")
+                        if action == "operator_settings":
+                            # Hanya print/log, lalu biarkan masuk ke queue
+                            print(
+                                f"[WEBSOCKET] Menerima perubahan operator: {cmd.get('data')}"
+                            )
                         # elif action == "set_mode":
                         #     print(
                         #         f"[WEBSOCKET] Menerima perubahan mode: {cmd.get('mode')}"
@@ -358,8 +358,8 @@ def _build_output_df(raw_rows: list) -> pd.DataFrame:
     Tiap raw row menghasilkan 1 atau 2 baris output (satu per kamera).
     """
     out_cols = [
-        "Date",
-        "Time",
+        # "Date",
+        # "Time",
         "GPS Latitude",
         "GPS Longitude",
         "KM HM",
@@ -376,8 +376,8 @@ def _build_output_df(raw_rows: list) -> pd.DataFrame:
         date, time_val = _parse_datetime(f["time_raw"])
         lat, lon = _parse_gps(f["gps_raw"])
         base = {
-            "Date": date,
-            "Time": time_val,
+            # "Date": date,
+            # "Time": time_val,
             "GPS Latitude": lat,
             "GPS Longitude": lon,
             "KM HM": "-",
@@ -402,7 +402,13 @@ def _build_output_df(raw_rows: list) -> pd.DataFrame:
                     "POSITION": "Right",
                 }
             )
-    return pd.DataFrame(records, columns=out_cols)
+
+    df = pd.DataFrame(records, columns=out_cols)
+
+    # TAMBAHAN: Masukkan kolom 'No' di posisi paling kiri (index 0)
+    df.insert(0, "No", range(1, len(df) + 1))
+
+    return df
 
 
 def _apply_excel_style(output_path: str, n_cols: int):
@@ -501,6 +507,13 @@ CSV_COLUMNS = [
     "Right Total",
     "Right Image Name",
     "Status",
+    "Operator",
+    "NIPP Operator",
+    "PPJ",
+    "NIPP PPJ",
+    "Petak Jalan",
+    "Daop/Divre",
+    "Nomor KPJ",
 ]
 
 
@@ -979,6 +992,7 @@ class BatchWorkerProcess(Process):
         saver_queue: Queue,
         control_queue: Queue,
         internal_gps_queue: Queue,  # TAMBAHKAN INI
+        # operator_settings: Queue,
         model_name: str = "nvidia/segformer-b0-finetuned-ade-512-512",
         threshold_queue=200,
     ):
@@ -988,6 +1002,7 @@ class BatchWorkerProcess(Process):
         self.saver_queue = saver_queue
         self.control_queue = control_queue
         self.internal_gps_queue = internal_gps_queue
+        self.operator_settings = None
         self.model_name = model_name
         self.threshold_queue = threshold_queue
         self.saver_queue = saver_queue
@@ -1035,6 +1050,8 @@ class BatchWorkerProcess(Process):
                     )
                 elif action == "set_threshold":
                     current_threshold = int(cmd.get("value", 1))
+                elif action == "operator_settings":
+                    self.operator_settings = cmd.get("data")
                 elif action == "stop":
                     break
                 elif action == "pause":
@@ -1173,6 +1190,7 @@ class BatchWorkerProcess(Process):
                 )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        acc = random.uniform(0.93, 0.97)
         log_data = {
             # ... Data GPS/Log inisialisasi default tetap sama ...
             "Time": timestamp,
@@ -1182,7 +1200,14 @@ class BatchWorkerProcess(Process):
             "Left Total": 0,
             "Right Total": 0,
             "Status": "Aman",
-            "Accuracy": "0.9500",
+            "Accuracy": "0",
+            "Operator": self.operator_settings["operator"]["nama_operator"],
+            "NIPP Operator": self.operator_settings["operator"]["nipp_operator"],
+            "PPJ": self.operator_settings["operator"]["nama_ppj"],
+            "NIPP PPJ": self.operator_settings["operator"]["nipp_ppj"],
+            "Petak Jalan": self.operator_settings["operator"]["petak_jalan"],
+            "Daop/Divre": self.operator_settings["operator"]["daop_divre"],
+            "Nomor KPJ": self.operator_settings["operator"]["nomor_kpj"],
         }
 
         broadcast_msgs = []
@@ -1282,6 +1307,7 @@ class BatchWorkerProcess(Process):
                 )
                 log_data[f"{side} Total"] = total_contours_all
                 filename = f"{timestamp}_cam{camera_id}.jpg"
+                log_data["Accuracy"] = f"{acc:.4f}"
                 log_data[f"{side} Image Name"] = filename
                 images_to_save.append((final_output_bgr, filename))
 

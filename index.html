@@ -241,21 +241,7 @@
         <div class="bg-[#f0f0f0] w-[800px] border border-gray-400 shadow-xl flex flex-col">
             <div class="p-4 border-b border-gray-300">
                 <h2 class="text-center text-lg font-semibold tracking-wide mb-4">SETTINGS SYSTEM</h2>
-                <div class="border border-gray-300 p-4 grid grid-cols-2 gap-6 bg-white/50">
-                    <div class="flex flex-col gap-3">
-                        <label class="flex items-center gap-2 cursor-pointer">
-                            <input type="radio" name="input_mode" id="radio-stream" checked onchange="handleInputModeChange()" class="w-4 h-4">
-                            <span class="font-semibold">STREAM</span>
-                        </label>
-                        <div class="flex items-center justify-between">
-                            <span>LEFT CAMERA</span>
-                            <select id="cam-left" class="border border-gray-300 px-2 py-1 w-48 text-xs bg-white focus:outline-none"><option>Camera 0</option><option>Camera 1</option></select>
-                        </div>
-                        <div class="flex items-center justify-between">
-                            <span>RIGHT CAMERA</span>
-                            <select id="cam-right" class="border border-gray-300 px-2 py-1 w-48 text-xs bg-white focus:outline-none"><option>Camera 0</option><option>Camera 1</option></select>
-                        </div>
-                    </div>
+                <div class="border border-gray-300 p-4 grid  gap-6 bg-white/50">
                     <div class="flex flex-col gap-3">
                         <label class="flex items-center gap-2 cursor-pointer">
                             <input type="radio" name="input_mode" id="radio-load" onchange="handleInputModeChange()" class="w-4 h-4">
@@ -276,19 +262,41 @@
             <div class="p-4 border-b border-gray-300">
                 <h2 class="text-center text-lg font-semibold tracking-wide mb-4">INFORMASI OPERATOR</h2>
                 <div class="border border-gray-300 p-4 grid grid-cols-2 gap-x-6 gap-y-3 bg-white/50">
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-28">NAMA OPERATOR</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-16">NIPP</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-28">NAMA PJJ</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-16">NIPP</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-28">KEDUDUKAN</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-16">LINTAS</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
-                    <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold whitespace-nowrap w-28">NOMOR SARANA</span><input type="text" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none"></div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-28">OPERATOR</span>
+                        <input type="text" id="op-operator" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-16">NIPP</span>
+                        <input type="text" id="op-nipp-operator" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-28">PPJ</span>
+                        <input type="text" id="op-ppj" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-16">NIPP</span>
+                        <input type="text" id="op-nipp-ppj" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-28">Petak Jalan</span>
+                        <input type="text" id="op-petak" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-16">Daop/Divre</span>
+                        <input type="text" id="op-daop" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-semibold whitespace-nowrap w-28">Nomor KPJ</span>
+                        <input type="text" id="op-kpj" class="border border-gray-300 px-2 py-1 w-full text-xs focus:outline-none">
+                    </div>
                 </div>
             </div>
 
             <div class="p-4 flex flex-col gap-2 bg-gray-100">
                 <button onclick="clearApp()" class="w-full border border-gray-400 bg-white hover:bg-gray-50 py-2 font-semibold tracking-wide shadow-sm transition">CLEAR APP</button>
-                <button onclick="toggleModal('modal-setting', false)" class="w-full border border-gray-400 bg-white hover:bg-gray-50 py-2 font-semibold tracking-wide shadow-sm transition">SAVE</button>
+                <!-- <button onclick="toggleModal('modal-setting', false)" class="w-full border border-gray-400 bg-white hover:bg-gray-50 py-2 font-semibold tracking-wide shadow-sm transition">SAVE</button> -->
+                <button onclick="saveSettings()" class="w-full border border-gray-400 bg-white hover:bg-gray-50 py-2 font-semibold tracking-wide shadow-sm transition">SAVE</button>
             </div>
         </div>
     </div>
@@ -335,17 +343,92 @@
             else modal.classList.add('hidden-page');
         }
 
-        function handleInputModeChange() {
-            const isStream = document.getElementById('radio-stream').checked;
-            document.getElementById('cam-left').disabled = !isStream;
-            document.getElementById('cam-right').disabled = !isStream;
-            document.getElementById('vid-left').disabled = isStream;
-            document.getElementById('vid-left').classList.toggle('bg-white', !isStream);
-            document.getElementById('btn-vid-left').disabled = isStream;
-            document.getElementById('vid-right').disabled = isStream;
-            document.getElementById('vid-right').classList.toggle('bg-white', !isStream);
-            document.getElementById('btn-vid-right').disabled = isStream;
+        function saveSettings() {
+            // 1. Ambil status Radio Button
+            const isLoadVideo = document.getElementById('radio-load').checked;
+
+            // 2. Ambil nilai Path Video
+            const vidLeft = document.getElementById('vid-left').value;
+            const vidRight = document.getElementById('vid-right').value;
+
+            // 3. Kemas data menggunakan ID elemen
+            const settingsData = {
+                mode: isLoadVideo ? "load_video" : "stream",
+                video_path_left: vidLeft,
+                video_path_right: vidRight,
+                operator: {
+                    nama_operator: document.getElementById('op-operator').value,
+                    nipp_operator: document.getElementById('op-nipp-operator').value,
+                    nama_ppj: document.getElementById('op-ppj').value,
+                    nipp_ppj: document.getElementById('op-nipp-ppj').value,
+                    petak_jalan: document.getElementById('op-petak').value,
+                    daop_divre: document.getElementById('op-daop').value,
+                    nomor_kpj: document.getElementById('op-kpj').value
+                }
+            };
+
+            // Tampilkan di Console untuk verifikasi
+            console.log("Data Settings Disimpan:", settingsData);
+
+            // 4. (Opsional) Kirim data ke Backend via WebSocket
+            if (typeof ws !== 'undefined' && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    action: 'operator_settings',
+                    data: settingsData
+                }));
+            }
+
+            // 5. Tutup modal
+            toggleModal('modal-setting', false);
         }
+
+        function handleInputModeChange() {
+            // Cek apakah radio button "STREAM" yang sedang aktif
+            // (Jika tidak ada id 'radio-stream', kita asumsikan 'radio-load' tidak di-check)
+            const radioStream = document.getElementById('radio-stream');
+            const isStream = radioStream ? radioStream.checked : false;
+
+            // --- Elemen STREAM (Dropdown Camera) ---
+            const camLeft = document.getElementById('cam-left');
+            const camRight = document.getElementById('cam-right');
+            
+            // Jika isStream true, maka tidak disabled (false). Jika isStream false, maka disabled (true).
+            if (camLeft) camLeft.disabled = !isStream;
+            if (camRight) camRight.disabled = !isStream;
+
+            // --- Elemen LOAD VIDEO (Input Path & Button) ---
+            const vidLeft = document.getElementById('vid-left');
+            const btnVidLeft = document.getElementById('btn-vid-left');
+            const vidRight = document.getElementById('vid-right');
+            const btnVidRight = document.getElementById('btn-vid-right');
+
+            // Karena logika kebalikan dari stream, disabled jika isStream = true
+            if (vidLeft) {
+                vidLeft.disabled = isStream;
+                // Efek visual: putih jika aktif, abu-abu jika non-aktif
+                if (isStream) {
+                    vidLeft.classList.add('bg-gray-100');
+                    vidLeft.classList.remove('bg-white');
+                } else {
+                    vidLeft.classList.add('bg-white');
+                    vidLeft.classList.remove('bg-gray-100');
+                }
+            }
+            if (btnVidLeft) btnVidLeft.disabled = isStream;
+
+            if (vidRight) {
+                vidRight.disabled = isStream;
+                if (isStream) {
+                    vidRight.classList.add('bg-gray-100');
+                    vidRight.classList.remove('bg-white');
+                } else {
+                    vidRight.classList.add('bg-white');
+                    vidRight.classList.remove('bg-gray-100');
+                }
+            }
+            if (btnVidRight) btnVidRight.disabled = isStream;
+        }
+
 
         let isPlaying = false;
         function togglePlay() {
