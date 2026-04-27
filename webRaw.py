@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import multiprocessing as mp
+import operator
 import os
 import queue
 import random
@@ -296,72 +297,71 @@ def _parse_gps(gps_str: str):
 
 def _classify_and_fix_row(row: list) -> dict:
     """
-    Perbaiki satu raw CSV row yang kolom-kolomnya salah posisi.
-
-    Mapping kolom CSV (header lama) → data aktual:
-      [2] 'Accuracy'          → Left Defect Type  (Squat / Corrugations / -)
-      [3] 'Loss'              → Left Total count   (0, 1, 2, ...)
-      [4] 'Confidence'        → Right Total count  (0, 1, 2, ...)
-      [5] 'Left Defect Type'  → Condition          (Kiri/Kanan Perlu Perbaikan)
-      [6] 'Left Total'        → Confidence score   (0.9500)
-      [7..9]                  → posisi gambar & defect kanan bervariasi per baris
-
-    5 pola posisi col[7], col[8], col[9]:
-      A : left only,  gambar di col[7]                → col7=cam1.jpg
-      B : left only,  gambar di col[9] (2 kosong dulu)→ col9=cam1.jpg
-      C : right only, defect di col[7], gambar col[8] → col7=Squat, col8=cam2.jpg
-      D : right only, kosong col[7], defect+img col[8,9]
-      E1: both cams,  left_img col[7], right_defect+img col[8,9]
-      E2: both cams,  right_defect+img col[7,8], left_img col[9]
+    CSV Header Baru:
+    0:Time, 1:GPS, 2:Accuracy, 3:Loss, 4:Confidence,
+    5:Left Defect Type, 6:Left Total, 7:Left Image Name,
+    8:Right Defect Type, 9:Right Total, 10:Right Image Name,
+    11:Status, 12:Operator, 13:NIPP Operator, 14:PPJ, 15:NIPP PPJ,
+    16:Petak Jalan, 17:Daop/Divre, 18:Nomor KPJ
     """
-    r = row + [""] * 5
-
-    left_defect = r[2].strip() if _is_defect_type(r[2].strip()) else "-"
-    right_defect = "-"
-    left_image = "-"
-    right_image = "-"
-
-    col7 = r[7].strip()
-    col8 = r[8].strip()
-    col9 = r[9].strip()
-
-    if _is_jpg(col7) and not col8 and not col9:  # A
-        left_image = col7
-    elif not col7 and not col8 and _is_jpg(col9):  # B
-        left_image = col9
-    elif _is_defect_type(col7) and _is_jpg(col8) and not col9:  # C
-        right_defect, right_image, left_defect = col7, col8, "-"
-    elif not col7 and _is_defect_type(col8) and _is_jpg(col9):  # D
-        right_defect, right_image, left_defect = col8, col9, "-"
-    elif _is_jpg(col7) and _is_defect_type(col8) and _is_jpg(col9):  # E1
-        left_image, right_defect, right_image = col7, col8, col9
-    elif _is_defect_type(col7) and _is_jpg(col8) and _is_jpg(col9):  # E2
-        right_defect, right_image, left_image = col7, col8, col9
+    r = row + ["-"] * 20  # Padding untuk keamanan
 
     return {
         "time_raw": r[0],
         "gps_raw": r[1],
-        "left_defect": left_defect,
-        "right_defect": right_defect,
-        "left_total": _safe(r[3]),
-        "right_total": _safe(r[4]),
-        "conf_score": _safe(r[6]),
-        "condition": _safe(r[5]),
-        "left_image": _safe(left_image),
-        "right_image": _safe(right_image),
+        "accuracy": _safe(r[2]),
+        "left_defect": _safe(r[5]),
+        "left_image": _safe(r[7]),
+        "right_defect": _safe(r[8]),
+        "right_image": _safe(r[10]),
+        # Ekstrak Info Operator (Diambil dari baris pertama yang memilikinya)
+        "Operator": _safe(r[12]),
+        "NIPP Operator": _safe(r[13]),
+        "PPJ": _safe(r[14]),
+        "NIPP PPJ": _safe(r[15]),
+        "Petak Jalan": _safe(r[16]),
+        "Daop/Divre": _safe(r[17]),
+        "Nomor KPJ": _safe(r[18]),
     }
 
 
-def _build_output_df(raw_rows: list) -> pd.DataFrame:
+def _get_indonesian_date(date_str: str) -> str:
+    """Mengubah '2026-04-25' menjadi 'Sabtu, 25 April 2026'."""
+    if date_str == "-" or not date_str:
+        return "-"
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        hari = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"][
+            dt.weekday()
+        ]
+        bulan = [
+            "Januari",
+            "Februari",
+            "Maret",
+            "April",
+            "Mei",
+            "Juni",
+            "Juli",
+            "Agustus",
+            "September",
+            "Oktober",
+            "November",
+            "Desember",
+        ][dt.month - 1]
+        return f"{hari}, {dt.day} {bulan} {dt.year}"
+    except Exception:
+        return date_str
+
+
+def _build_output_df(raw_rows: list) -> tuple:
     """
-    Ubah list raw CSV rows menjadi DataFrame output yang sudah dikoreksi.
-    Tiap raw row menghasilkan 1 atau 2 baris output (satu per kamera).
+    Parse CSV yang sudah rapi menjadi DataFrame (Tabel Kerusakan TANPA Date/Time)
+    dan Dictionary (Informasi Operator + Hari/Tanggal).
     """
+    # Date dan Time dihapus dari tabel
     out_cols = [
-        # "Date",
-        # "Time",
-        "GPS Latitude",
-        "GPS Longitude",
+        "Latitude",
+        "Longitude",
         "KM HM",
         "Accuracy",
         "Defect Type",
@@ -369,46 +369,63 @@ def _build_output_df(raw_rows: list) -> pd.DataFrame:
         "POSITION",
     ]
     records = []
+    operator_info = {}
+
     for row in raw_rows:
-        if not row or not row[0].strip():
+        if not row or not row[0].strip() or row[0].strip() == "Time":
             continue
-        f = _classify_and_fix_row(row)
-        date, time_val = _parse_datetime(f["time_raw"])
-        lat, lon = _parse_gps(f["gps_raw"])
-        base = {
-            # "Date": date,
-            # "Time": time_val,
-            "GPS Latitude": lat,
-            "GPS Longitude": lon,
-            "KM HM": "-",
-            "Accuracy": f["conf_score"],
-            # "Defect Type": f["condition"],
-        }
-        if f["left_defect"] != "-":
+
+        r = row + ["-"] * 15
+
+        time_raw = str(r[0]).strip()
+        gps_raw = str(r[1]).strip()
+        accuracy = str(r[2]).strip()
+        defect_type = str(r[3]).strip()
+        image_name = str(r[4]).strip()
+        position = str(r[5]).strip()
+
+        op_nama = str(r[6]).strip()
+        op_nipp = str(r[7]).strip()
+        ppj_nama = str(r[8]).strip()
+        ppj_nipp = str(r[9]).strip()
+        petak = str(r[10]).strip()
+        daop = str(r[11]).strip()
+        kpj = str(r[12]).strip()
+
+        # Tangkap data operator & Hari/Tanggal dari baris pertama yang valid
+        if not operator_info:
+            date_val, _ = _parse_datetime(time_raw)
+            operator_info = {
+                "Hari/Tanggal": _get_indonesian_date(date_val),
+                "Operator": op_nama if op_nama != "-" else "-",
+                "NIPP Operator": op_nipp,
+                "PPJ": ppj_nama,
+                "NIPP PPJ": ppj_nipp,
+                "Petak Jalan": petak,
+                "Daop/Divre": daop,
+                "Nomor KPJ": kpj,
+            }
+
+        # Masukkan data kerusakan (tanpa Date/Time)
+        if defect_type and defect_type not in ("-", "", "nan"):
+            lat, lon = _parse_gps(gps_raw)
             records.append(
                 {
-                    **base,
-                    "Defect Type": f["left_defect"],
-                    "Image": f["left_image"],
-                    "POSITION": "Left",
-                }
-            )
-        if f["right_defect"] != "-":
-            records.append(
-                {
-                    **base,
-                    "Defect Type": f["right_defect"],
-                    "Image": f["right_image"],
-                    "POSITION": "Right",
+                    "Latitude": lat,
+                    "Longitude": lon,
+                    "KM HM": "-",
+                    "Accuracy": accuracy,
+                    "Defect Type": defect_type,
+                    "Image": image_name,
+                    "POSITION": position,
                 }
             )
 
     df = pd.DataFrame(records, columns=out_cols)
+    if not df.empty:
+        df.insert(0, "No", range(1, len(df) + 1))
 
-    # TAMBAHAN: Masukkan kolom 'No' di posisi paling kiri (index 0)
-    df.insert(0, "No", range(1, len(df) + 1))
-
-    return df
+    return df, operator_info
 
 
 def _apply_excel_style(output_path: str, n_cols: int):
@@ -494,19 +511,14 @@ def _apply_excel_style(output_path: str, n_cols: int):
 # CSV COLUMNS (struktur yang benar untuk disimpan dari pipeline)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 CSV_COLUMNS = [
-    "Time",  # timestamp: '20260408_200305'
-    "GPS",  # raw GPS string
-    "Accuracy",  # ← data aktual: Left Defect Type
-    "Loss",  # ← data aktual: Left Total count
-    "Confidence",  # ← data aktual: Right Total count
-    "Left Defect Type",  # ← data aktual: Condition string
-    "Left Total",  # ← data aktual: Confidence score
-    "Left Image Name",  # posisi gambar/defect kanan bervariasi (pola A–E)
-    "Right Defect Type",
-    "Right Total",
-    "Right Image Name",
-    "Status",
+    "Time",
+    "GPS",
+    "Accuracy",
+    "Defect Type",
+    "Image",
+    "Position",
     "Operator",
     "NIPP Operator",
     "PPJ",
@@ -523,6 +535,7 @@ CSV_COLUMNS = [
 
 
 class ImageSaverProcess(Process):
+    ...
     """
     Proses terpisah untuk menyimpan gambar dan log data ke CSV/Excel.
     Komunikasi via multiprocessing.Queue (tidak ada PyQtSignal).
@@ -605,9 +618,7 @@ class ImageSaverProcess(Process):
     # ── Excel export ──────────────────────────────────────────────────────────
 
     def _export_csv_to_excel(self):
-        """
-        Versi O(1) Formatting: Single-pass I/O, Delegated Rendering.
-        """
+        """Export ke Excel dengan format korporat: Judul, Logo, Info Operator, dan Tabel Data."""
         self._flush_buffer_to_csv()
 
         if not os.path.exists(self.temp_csv):
@@ -617,44 +628,57 @@ class ImageSaverProcess(Process):
         try:
             raw_rows = self._parse_raw_csv(self.temp_csv)
             if not raw_rows:
-                log.warning("CSV kosong, tidak ada data untuk diexport.")
                 return
 
-            df = _build_output_df(raw_rows)
+            df, op_info = _build_output_df(raw_rows)
             n_cols = len(df.columns)
 
-            log.info(
-                f"Export: {len(raw_rows)} baris CSV → "
-                f"{len(df)} baris output "
-                f"(Left: {(df['POSITION'] == 'Left').sum()}, "
-                f"Right: {(df['POSITION'] == 'Right').sum()})"
-            )
+            # --- KONFIGURASI BARIS EXCEL ---
+            # Tabel akan dimulai di baris ke-13 (indeks 12)
+            TABLE_START_ROW = 12
 
-            # PENDEKATAN STRATEGIS: Tulis data dan style SEKALIGUS di memori C-level
             with pd.ExcelWriter(self.final_excel, engine="xlsxwriter") as writer:
-                # 1. Tulis dataset mentah (mulai di baris ke-3 Excel, lewati baris header default pandas)
                 df.to_excel(
                     writer,
                     index=False,
-                    sheet_name="Rail Inspection",
-                    startrow=2,
+                    sheet_name="Laporan Inspeksi",
+                    startrow=TABLE_START_ROW,
                     header=False,
                 )
 
                 workbook = writer.book
-                worksheet = writer.sheets["Rail Inspection"]
+                worksheet = writer.sheets["Laporan Inspeksi"]
 
-                # 2. Definisi *Style Blueprint* (Hanya dibuat 1 kali di memori, bukan per-sel)
+                # ==========================================
+                # STYLE FORMATTING
+                # ==========================================
+                title_format = workbook.add_format(
+                    {
+                        "bold": True,
+                        "align": "center",
+                        "valign": "vcenter",
+                        "font_size": 16,
+                        "font_name": "Arial",
+                    }
+                )
+                bold_format = workbook.add_format(
+                    {"bold": True, "font_size": 10, "font_name": "Arial"}
+                )
+                normal_format = workbook.add_format(
+                    {"font_size": 10, "font_name": "Arial"}
+                )
+
                 header_format = workbook.add_format(
                     {
                         "bold": True,
                         "align": "center",
                         "valign": "vcenter",
-                        "bg_color": "#F2F2F2",
+                        "bg_color": "#DDEBF7",
                         "border": 1,
-                        "border_color": "#AAAAAA",
+                        "border_color": "#000000",
                         "font_name": "Arial",
                         "font_size": 10,
+                        "text_wrap": True,
                     }
                 )
 
@@ -669,46 +693,91 @@ class ImageSaverProcess(Process):
                     }
                 )
 
-                alt_fill_format = workbook.add_format({"bg_color": "#F9F9F9"})
+                # ==========================================
+                # BAGIAN ATAS (KOP SURAT)
+                # ==========================================
+                worksheet.merge_range("A1:H1", "Defect Detection Report", title_format)
+                worksheet.set_row(0, 30)
 
-                # 3. Terapkan style ke seluruh rentang KOLOM sekaligus (O(1) eksekusi)
-                col_widths = [13, 10, 13, 13, 9, 16, 11, 24, 32, 8, 11, 11]
-                for col_idx, width in enumerate(col_widths[:n_cols]):
-                    worksheet.set_column(col_idx, col_idx, width, cell_format)
+                try:
+                    worksheet.insert_image(
+                        "H1",
+                        "icon_100_/logo_kai.png",
+                        {"x_scale": 0.1, "y_scale": 0.1, "x_offset": 10, "y_offset": 5},
+                    )
+                except Exception as e:
+                    pass
 
-                # Atur tinggi baris (opsional, disesuaikan dengan estetika sebelumnya)
-                worksheet.set_row(0, 16)
-                worksheet.set_row(1, 22)
-
-                # 4. Injeksi Custom Headers (Operasi manual yang cepat)
-                worksheet.merge_range(0, 2, 0, 3, "GPS", header_format)  # C1:D1
-                for col_idx in range(n_cols):
-                    if col_idx not in (2, 3):
-                        worksheet.write(0, col_idx, "", header_format)  # Sisa Baris 1
-                    worksheet.write(
-                        1, col_idx, df.columns[col_idx], header_format
-                    )  # Baris 2
-
-                # 5. Delegasi Render Zebra Striping ke Microsoft Excel
-                # Memerintahkan software Excel untuk mengevaluasi warna tiap buka file, bukan di Python
-                data_start_row = 2
-                data_end_row = len(df) + 1
-                worksheet.conditional_format(
-                    data_start_row,
-                    0,
-                    data_end_row,
-                    n_cols - 1,
-                    {
-                        "type": "formula",
-                        "criteria": "=MOD(ROW(),2)=0",
-                        "format": alt_fill_format,
-                    },
+                # 3. Baris 1: Hari/Tanggal (Kiri) & Daop/Divre (Kanan)
+                worksheet.write("A3", "Hari / Tanggal", bold_format)
+                worksheet.write(
+                    "B3", f": {op_info.get('Hari/Tanggal', '-')}", normal_format
                 )
 
-                # 6. Freeze Panes
-                worksheet.freeze_panes(2, 0)
+                worksheet.write("A5", "Daop / Divre", bold_format)
+                worksheet.write(
+                    "B5", f": {op_info.get('Daop/Divre', '-')}", normal_format
+                )
 
-            log.info(f"Data diexport SECARA EFISIEN ke: {self.final_excel}")
+                # 4. Baris 2: Operator (Kiri) & Petak Jalan (Kanan)
+                worksheet.write("F5", "Operator", bold_format)
+                worksheet.write(
+                    "G5", f": {op_info.get('Operator', '-')}", normal_format
+                )
+
+                worksheet.write("A4", "Petak Jalan", bold_format)
+                worksheet.write(
+                    "B4", f": {op_info.get('Petak Jalan', '-')}", normal_format
+                )
+
+                # 5. Baris 3: NIPP Operator (Kiri) & Nomor KPJ (Kanan)
+                worksheet.write("H5", "NIPP", bold_format)
+                worksheet.write(
+                    "I5", f": {op_info.get('NIPP Operator', '-')}", normal_format
+                )
+
+                worksheet.write("F3", "Nomor KPJ", bold_format)
+                worksheet.write(
+                    "G3", f": {op_info.get('Nomor KPJ', '-')}", normal_format
+                )
+
+                # 6. Baris 4 & 5: PPJ & NIPP PPJ (Hanya di Kiri)
+                worksheet.write("F4", "PPJ", bold_format)
+                worksheet.write("G4", f": {op_info.get('PPJ', '-')}", normal_format)
+
+                worksheet.write("H4", "NIPP", bold_format)
+                worksheet.write(
+                    "I4", f": {op_info.get('NIPP PPJ', '-')}", normal_format
+                )
+                # ==========================================
+                # TABEL DATA
+                # ==========================================
+                # Atur lebar kolom untuk 8 kolom (No, Lat, Lon, KM, Acc, Defect, Img, Pos)
+                col_widths = [5, 13, 13, 10, 10, 20, 28, 10]
+                for col_idx, width in enumerate(col_widths):
+                    worksheet.set_column(col_idx, col_idx, width, cell_format)
+
+                # Header Tabel Baris 1 (Row index 10)
+                # GPS (Lat & Lon) sekarang ada di index kolom 1 & 2
+                worksheet.merge_range(10, 1, 10, 2, "GPS", header_format)
+
+                for col_idx in range(n_cols):
+                    if col_idx not in (
+                        1,
+                        2,
+                    ):  # Jika bukan bagian dari Latitude/Longitude
+                        worksheet.write(10, col_idx, "", header_format)
+
+                    # Sub Header Tabel Baris 2 (Row index 11)
+                    worksheet.write(11, col_idx, df.columns[col_idx], header_format)
+
+                worksheet.set_row(10, 18)
+                worksheet.set_row(11, 20)
+
+                # Freeze Panes (agar header tidak hilang saat di-scroll)
+                worksheet.freeze_panes(12, 0)
+
+            log.info(f"Data Excel berhasil dibuat: {self.final_excel}")
 
         except Exception as e:
             log.error(f"Gagal Export Excel: {e}")
@@ -1037,6 +1106,7 @@ class BatchWorkerProcess(Process):
         # current_gps_string = "Latitude: N/A\nLongitude:N/A"
 
         current_threshold = self.threshold_queue
+        operator_logged = False
 
         while True:
             # Cek perintah kontrol
@@ -1109,7 +1179,11 @@ class BatchWorkerProcess(Process):
                         active_model,
                         current_gps_string,  # PASSING DATA GPS KE FUNGSI INI
                         current_threshold,
+                        operator_logged,
                     )
+
+                    if len(log_data) > 0:
+                        operator_logged = True
 
                     # Kirim frame ke broadcaster (WebSocket)
                     for msg in results:
@@ -1119,10 +1193,17 @@ class BatchWorkerProcess(Process):
                             pass
 
                     # Kirim log + gambar ke saver
-                    if log_data["Left Total"] > 0 or log_data["Right Total"] > 0:
-                        for img_data in images:
-                            self.saver_queue.put(("image", img_data))
-                        self.saver_queue.put(("data_log", log_data))
+                    # if log_data["Left Total"] > 0 or log_data["Right Total"] > 0:
+                    #     for img_data in images:
+                    #         self.saver_queue.put(("image", img_data))
+                    #     self.saver_queue.put(("data_log", log_data))
+
+                    for img_data in images:
+                        self.saver_queue.put(("image", img_data))
+
+                    # log_data sekarang adalah List (logs_to_save)
+                    for individual_log in log_data:
+                        self.saver_queue.put(("data_log", individual_log))
 
                     # Kirim sinyal graph sekali
                     if not graph_started:
@@ -1145,6 +1226,7 @@ class BatchWorkerProcess(Process):
         active_model,
         current_gps_string,
         current_threshold,
+        operator_logged,
     ):
         roi_inputs = []
         meta_data = []
@@ -1191,27 +1273,45 @@ class BatchWorkerProcess(Process):
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         acc = random.uniform(0.93, 0.97)
-        log_data = {
-            # ... Data GPS/Log inisialisasi default tetap sama ...
+
+        if not operator_logged:
+            op_nama = self.operator_settings["operator"]["nama_operator"]
+            op_nipp = self.operator_settings["operator"]["nipp_operator"]
+            ppj_nama = self.operator_settings["operator"]["nama_ppj"]
+            ppj_nipp = self.operator_settings["operator"]["nipp_ppj"]
+            petak = self.operator_settings["operator"]["petak_jalan"]
+            daop = self.operator_settings["operator"]["daop_divre"]
+            kpj = self.operator_settings["operator"]["nomor_kpj"]
+        else:
+            # Jika sudah pernah disimpan, kosongkan datanya
+            op_nama = op_nipp = ppj_nama = ppj_nipp = petak = daop = kpj = ""
+
+        # 1. Template Dasar (Base Info yang selalu sama untuk kiri/kanan)
+        base_log_data = {
             "Time": timestamp,
-            # "GPS": "Latitude: -6.975971\nLongitude: 107.629658",
             "GPS": current_gps_string,
-            "Left Defect Type": "-",
-            "Left Total": 0,
-            "Right Total": 0,
-            "Status": "Aman",
             "Accuracy": "0",
-            "Operator": self.operator_settings["operator"]["nama_operator"],
-            "NIPP Operator": self.operator_settings["operator"]["nipp_operator"],
-            "PPJ": self.operator_settings["operator"]["nama_ppj"],
-            "NIPP PPJ": self.operator_settings["operator"]["nipp_ppj"],
-            "Petak Jalan": self.operator_settings["operator"]["petak_jalan"],
-            "Daop/Divre": self.operator_settings["operator"]["daop_divre"],
-            "Nomor KPJ": self.operator_settings["operator"]["nomor_kpj"],
+            # Defect Type, Image, dan Position akan diisi nanti di dalam loop
+            "Defect Type": "-",
+            "Image": "-",
+            "Position": "-",
+            "Operator": op_nama,
+            "NIPP Operator": op_nipp,
+            "PPJ": ppj_nama,
+            "NIPP PPJ": ppj_nipp,
+            "Petak Jalan": petak,
+            "Daop/Divre": daop,
+            "Nomor KPJ": kpj,
         }
 
         broadcast_msgs = []
         images_to_save = []
+
+        # List untuk menampung log data yang valid (ada deteksi)
+        logs_to_save = []
+
+        left_total = 0
+        right_total = 0
 
         for i in range(2):
             camera_id = i + 1
@@ -1258,7 +1358,6 @@ class BatchWorkerProcess(Process):
                     selected_boxes = [
                         cv2.boundingRect(c)
                         for c in contours
-                        # if cv2.boundingRect(c)[3] > 230
                         if cv2.boundingRect(c)[3] > threshold
                     ]
 
@@ -1278,9 +1377,6 @@ class BatchWorkerProcess(Process):
 
             # Siapkan Frame Output
             final_frame_resized = cv2.resize(final_frame, (360, 640))
-            # final_output_rgb = cv2.cvtColor(
-            #     cv2.flip(final_frame_resized, 0), cv2.COLOR_RGB2BGR
-            # )
             final_output_bgr = cv2.flip(final_frame_resized, 0)
 
             _, buf = cv2.imencode(
@@ -1294,43 +1390,70 @@ class BatchWorkerProcess(Process):
                     "camera_id": camera_id,
                     "frame_b64": frame_b64,
                     "total_contours": total_contours_all,
-                    "gps": log_data["GPS"],
+                    "gps": base_log_data["GPS"],
                     "detected_classes": detected_classes,
                     "timestamp": timestamp,
-                    "inspection": clip_counts,  # Data YOLO dikirim ke UI
+                    "inspection": clip_counts,
                 }
             )
 
+            # 2. BENTUK LOG DATA SPESIFIK UNTUK SISI INI (JIKA ADA DETEKSI)
             if total_contours_all > 0:
-                log_data[f"{side} Defect Type"] = ", ".join(
-                    c["name"] for c in detected_classes
-                )
-                log_data[f"{side} Total"] = total_contours_all
+                # Copy base info agar aman dari reference manipulation
+                current_log = base_log_data.copy()
+
+                defect_type_str = ", ".join(c["name"] for c in detected_classes)
                 filename = f"{timestamp}_cam{camera_id}.jpg"
-                log_data["Accuracy"] = f"{acc:.4f}"
-                log_data[f"{side} Image Name"] = filename
+
+                # Update data spesifik
+                current_log["Defect Type"] = defect_type_str
+                current_log["Image"] = filename
+                current_log["Position"] = side
+                current_log["Accuracy"] = f"{acc:.4f}"
+
+                # Simpan ke list
+                logs_to_save.append(current_log)
                 images_to_save.append((final_output_bgr, filename))
 
-        # Status
-        has_left = log_data["Left Total"] > 0
-        has_right = log_data["Right Total"] > 0
-        if has_left and has_right:
-            log_data["Status"] = "Kiri & Kanan Perlu Perbaikan"
-        elif has_left:
-            log_data["Status"] = "Kiri Perlu Perbaikan"
-        elif has_right:
-            log_data["Status"] = "Kanan Perlu Perbaikan"
+            # Rekap untuk status akhir (di luar loop)
+            if side == "Left":
+                left_total = total_contours_all
+            else:
+                right_total = total_contours_all
 
-        # Kirim log ke broadcaster juga (untuk tampilan tabel di web)
+        # 3. KEMBALIKAN DATA
+        # Karena _process_batch Anda sebelumnya hanya mengembalikan 1 dictionary `log_data`,
+        # dan format baru memungkinkan kita menyimpan 2 dictionary (kiri & kanan),
+        # maka pastikan fungsi pemanggil Anda (yang menjalankan self.saver_queue.put)
+        # sudah bisa menerima list of logs.
+
+        # Untuk menjaga kompatibilitas dengan UI yang mungkin butuh "Status",
+        # kita buat satu summary log data (ini tidak perlu disimpan ke CSV,
+        # hanya untuk update dashboard UI).
+        summary_log = base_log_data.copy()
+        summary_log["Left Total"] = left_total
+        summary_log["Right Total"] = right_total
+
+        has_left = left_total > 0
+        has_right = right_total > 0
+        if has_left and has_right:
+            summary_log["Status"] = "Kiri & Kanan Perlu Perbaikan"
+        elif has_left:
+            summary_log["Status"] = "Kiri Perlu Perbaikan"
+        elif has_right:
+            summary_log["Status"] = "Kanan Perlu Perbaikan"
+
+        # Kirim summary ke web UI
         broadcast_msgs.append(
             {
                 "type": "log",
-                "data": {k: v for k, v in log_data.items() if k != "GPS"},
+                "data": {k: v for k, v in summary_log.items() if k != "GPS"},
                 "timestamp": timestamp,
             }
         )
 
-        return broadcast_msgs, log_data, images_to_save
+        # KEMBALIKAN LIST LOGS (bukan satu dictionary)
+        return broadcast_msgs, logs_to_save, images_to_save
 
 
 # ============================================================================
