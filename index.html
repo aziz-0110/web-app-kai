@@ -33,7 +33,7 @@
 <body class="bg-gray-200 h-[100dvh] w-full overflow-hidden flex flex-col font-sans text-sm">
   <div id="toast-container" class="fixed top-4 left-1/2 -translate-x-1/2 z-[9999] flex flex-col gap-2 pointer-events-none"></div>
     <main class="flex-1 overflow-auto relative">
-        <section id="page-home" class="page-section absolute inset-0 bg-[#0B3342] bg-[url('./icon_100_/bg.png')] bg-contain bg-center bg-repeat text-white flex flex-col">
+        <section id="page-home" class="page-section absolute inset-0 bg-[#0B3342] bg-[url('./icon_100_/bg.png')] bg-contain bg-center bg-no-repeat text-white flex flex-col">
             <div class="flex-1 flex flex-col items-center justify-center gap-12">
                 <div class="flex gap-24 text-center">
                     <div class="flex flex-col items-center cursor-pointer hover:scale-105 transition" onclick="goTo('rail')">
@@ -53,10 +53,22 @@
                 </div>
 
                 <div class="flex gap-24 text-center">
-                    <div class="flex flex-col items-center cursor-pointer hover:scale-105 transition" onclick="sendExportCommand()">
+                    <div class="flex flex-col items-center cursor-pointer hover:scale-105 transition" onclick="sendExportCommand('export')">
                         <img src="./icon_100_/report1.png" alt="Report" class="w-28 h-28 mb-4 object-contain">
                         <span class="font-bold text-lg">Report</span>
                     </div>
+
+                    <!-- <div class="flex flex-col items-center cursor-pointer hover:scale-105 transition" onclick="sendExportCommand('poweroff')"> -->
+                    <!--     <div class="w-28 h-28 mb-4 flex items-center justify-center"> -->
+                    <!--         <div class="w-24 h-24 flex items-center justify-center bg-orange-500 rounded-full shadow-md"> -->
+                    <!--             <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" fill="white" stroke="white" stroke-width="0.5" class="bi bi-power" viewBox="0 0 16 16"> -->
+                    <!--                 <path d="M7.5 1v7h1V1z"/> -->
+                    <!--                 <path d="M3 8.812a5 5 0 0 1 2.578-4.375l-.485-.874A6 6 0 1 0 11 3.616l-.501.865A5 5 0 1 1 3 8.812"/> -->
+                    <!--             </svg> -->
+                    <!--         </div> -->
+                    <!--     </div> -->
+                    <!--     <span class="font-bold text-lg">Power Off</span> -->
+                    <!-- </div> -->
 
                     <div class="flex flex-col items-center cursor-pointer hover:scale-105 transition" onclick="toggleModal('modal-setting', true)">
                         <img src="./icon_100_/setting1.png" alt="Setting" class="w-28 h-28 mb-4 object-contain">
@@ -214,16 +226,16 @@
             <button id="btn-rail" onclick="goTo('rail')" class="nav-btn group w-20 flex flex-col items-center justify-center transition text-gray-500 hover:text-orange-500 bg-transparent outline-none"><img src="./icon_100_/rail0.png" class="w-10 h-10 mb-1 block group-hover:hidden icon-normal"><img src="./icon_100_/rail1.png" class="w-10 h-10 mb-1 hidden group-hover:block icon-active"><span class="text-xs font-semibold">Rail</span></button>
             <button id="btn-ballast" onclick="goTo('ballast')" class="nav-btn group w-20 flex flex-col items-center justify-center transition text-gray-500 hover:text-orange-500 bg-transparent outline-none"><img src="./icon_100_/ballast0.png" class="w-10 h-10 mb-1 block group-hover:hidden icon-normal"><img src="./icon_100_/ballast1.png" class="w-10 h-10 mb-1 hidden group-hover:block icon-active"><span class="text-xs font-semibold">Ballast</span></button>
             <button id="btn-fastener" onclick="goTo('fastener')" class="nav-btn group w-20 flex flex-col items-center justify-center transition text-gray-500 hover:text-orange-500 bg-transparent outline-none"><img src="./icon_100_/fastener0.png" class="w-10 h-10 mb-1 block group-hover:hidden icon-normal"><img src="./icon_100_/fastener1.png" class="w-10 h-10 mb-1 hidden group-hover:block icon-active"><span class="text-xs font-semibold">Fastener</span></button>
-            <button onclick="sendExportCommand()" class="nav-btn group w-20 flex flex-col items-center justify-center transition text-gray-500 hover:text-orange-500 bg-transparent outline-none"><img src="./icon_100_/report0.png" class="w-10 h-10 mb-1 block group-hover:hidden icon-normal"><img src="./icon_100_/report1.png" class="w-10 h-10 mb-1 hidden group-hover:block icon-active"><span class="text-xs font-semibold">Report</span></button>
+            <button onclick="sendExportCommand('export')" class="nav-btn group w-20 flex flex-col items-center justify-center transition text-gray-500 hover:text-orange-500 bg-transparent outline-none"><img src="./icon_100_/report0.png" class="w-10 h-10 mb-1 block group-hover:hidden icon-normal"><img src="./icon_100_/report1.png" class="w-10 h-10 mb-1 hidden group-hover:block icon-active"><span class="text-xs font-semibold">Report</span></button>
             <button onclick="toggleModal('modal-setting', true)" class="nav-btn group w-20 flex flex-col items-center justify-center transition text-gray-500 hover:text-orange-500 bg-transparent outline-none"><img src="./icon_100_/setting0.png" class="w-10 h-10 mb-1 block group-hover:hidden icon-normal"><img src="./icon_100_/setting1.png" class="w-10 h-10 mb-1 hidden group-hover:block icon-active"><span class="text-xs font-semibold">Setting</span></button>
         </div>
         
         <div class="flex-1 flex justify-end h-full py-2">
             <div class="flex items-center gap-2 border-l border-gray-300 pl-4">
                 
-                <div id="container-threshold" class="hidden-page flex flex-col items-center justify-center mr-2">
-                    <label for="input-threshold" class="text-xs font-semibold  mb-1">Threshold</label>
-                    <input type="number" id="input-threshold" value="2" step="1" min="1" max="3" onchange="updateThreshold()" class="border border-gray-300 rounded px-1 py-0.5 w-16 text-xs text-center font-bold text-gray-700 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500">
+                <div id="container-threshold" class="hidden-page flex flex-col items-center justify-center ">
+                    <input type="number" id="input-threshold" value="2" step="1" min="1" max="3" onchange="updateThreshold()" class="border border-gray-300 rounded px-1 mt-1 py-0.5 w-16 text-xs text-center font-bold text-gray-700 focus:outline-none focus:border-orange-500 focus:ring-1 focus:ring-orange-500">
+                    <label for="input-threshold" class="text-xs font-semibold  mt-3">Threshold</label>
                 </div>
 
                 <button id="btn-play" onclick="togglePlay()" class="w-20 flex flex-col items-center justify-center hover:bg-gray-100 rounded transition text-gray-700">
@@ -240,7 +252,7 @@
     <div id="modal-setting" class="hidden-page fixed inset-0 bg-black/50 z-50 flex items-center justify-center backdrop-blur-sm">
         <div class="bg-[#f0f0f0] w-[800px] border border-gray-400 shadow-xl flex flex-col">
             <div class="p-4 border-b border-gray-300">
-                <h2 class="text-center text-lg font-semibold tracking-wide mb-4">SETTINGS SYSTEM</h2>
+                <h2 class="text-center text-lg font-semibold tracking-wide mb-4">Setting System</h2>
                 <div class="border border-gray-300 p-4 grid  gap-6 bg-white/50">
                     <div class="flex flex-col gap-3">
                         <label class="flex items-center gap-2 cursor-pointer">
@@ -260,7 +272,7 @@
             </div>
 
             <div class="p-4 border-b border-gray-300">
-                <h2 class="text-center text-lg font-semibold tracking-wide mb-4">INFORMASI OPERATOR</h2>
+                <h2 class="text-center text-lg font-semibold tracking-wide mb-4">Information User</h2>
                 <div class="border border-gray-300 p-4 grid grid-cols-2 gap-x-6 gap-y-3 bg-white/50">
                     <div class="flex items-center justify-between gap-2">
                         <span class="text-xs font-semibold whitespace-nowrap w-28">OPERATOR</span>
@@ -580,15 +592,16 @@
             }
         }
 
-        function sendExportCommand() {
+        function sendExportCommand(commands) {
             const command = {
-                action: "export"
+                action: commands
             };
             // socket adalah variabel WebSocket yang Anda inisialisasi di awal
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify(command));
                 console.log("Perintah ekspor dikirim ke server...");
-                alert("Data sedang di eksport ke excel")
+                // alert("Data sedang di eksport ke excel")
+                showToast('export', 'Data is being exported to Excel', 'info');
             } else {
                 alert("Koneksi server terputus!");
             }
@@ -611,13 +624,14 @@
                     const msg = JSON.parse(event.data);
                     if (msg.type === 'frame') renderFrameData(msg);
                     else if (msg.type === 'frame_yolo') renderYoloFrameData(msg);
-                    else if (msg.type === 'log') renderLogData(msg);
+                    // else if (msg.type === 'log') renderLogData(msg);
                     else if (msg.type === 'gps_status') {
                         if (msg.status === 'searching') showToast('gps-status', msg.message, 'warning');
-                        else if (msg.status === 'fixed') {
+                        else if (msg.status === 'locked') {
                             hideToast('gps-status');
-                            _setText('lat-left', msg.lat); _setText('long-left', msg.lon);
-                            _setText('lat-right', msg.lat); _setText('long-right', msg.lon);
+                            _setText('lat-left', msg.lat.toFixed(6)); _setText('long-left', msg.lon.toFixed(6));
+                            _setText('lat-right', msg.lat.toFixed(6)); _setText('long-right', msg.lon.toFixed(6));
+                            _setText('kmhm-left', msg.km_range); _setText('kmhm-right', msg.km_range);
                         }
                     } else if (msg.type === 'camera_error') {
                         const toastId = `cam-err-${msg.camera_id}`;
@@ -669,6 +683,9 @@
             _setText(`corrugation-${side}`, corrugation); _setText(`rail-end-${side}`, rail_end);
             _setText(`shelling-${side}`, shelling); _setText(`squat-${side}`, squat);
             _setText(`total-defect-${side}`, msg.total_contours);
+            
+            let acc = (msg.total_contours > 0) ? msg.accuracy : '0';
+            _setText(`accuracy-${side}`, acc);
 
             if (side === 'left') { frameCountLeft++; updateDefectChart(chartLeft, frameCountLeft, msg.total_contours); } 
             else { frameCountRight++; updateDefectChart(chartRight, frameCountRight, msg.total_contours); }
@@ -680,7 +697,6 @@
         function renderLogData(msg) {
             const acc = (msg.data || {})['Accuracy'] || '-';
             _setText('accuracy-left', acc); _setText('accuracy-right', acc);
-            _setText('kmhm-left', 'N/A'); _setText('kmhm-right', 'N/A');
         }
 
         function renderYoloFrameData(msg) {

@@ -4,9 +4,11 @@ import csv
 import io
 import json
 import logging
+import math
 import multiprocessing as mp
 import operator
 import os
+import re
 import queue
 import random
 import time
@@ -19,6 +21,7 @@ import numpy as np
 import pandas as pd
 import torch
 import uvicorn
+from scipy.spatial import KDTree
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -511,10 +514,11 @@ def _apply_excel_style(output_path: str, n_cols: int):
 # CSV COLUMNS (struktur yang benar untuk disimpan dari pipeline)
 # ─────────────────────────────────────────────────────────────────────────────
 
-
 CSV_COLUMNS = [
+    "Mode",  # TAMBAHAN BARU: segformer / yolo / yolo_ballast
     "Time",
     "GPS",
+    "KM HM",
     "Accuracy",
     "Defect Type",
     "Image",
@@ -529,28 +533,89 @@ CSV_COLUMNS = [
 ]
 
 
+def _build_output_dfs(raw_rows: list) -> tuple:
+    """
+    Parse CSV menjadi Dictionary of DataFrames berdasarkan Mode.
+    """
+    out_cols = [
+        "Latitude",
+        "Longitude",
+        "KM HM",
+        "Accuracy",
+        "Defect Type",
+        "Image",
+        "POSITION",
+    ]
+    records = {"segformer": [], "yolo": [], "yolo_ballast": []}
+    operator_info = {}
+
+    for row in raw_rows:
+        # Cek jika baris kosong atau header
+        if not row or not row[0].strip() or row[0].strip() in ("Mode", "Time"):
+            continue
+
+        r = row + ["-"] * 15
+
+        mode = str(r[0]).strip()
+        time_raw = str(r[1]).strip()
+        gps_raw = str(r[2]).strip()
+        km_hm = str(r[3]).strip()  # <-- TAMBAHAN (index 3)
+        accuracy = str(r[4]).strip()  # sebelumnya r[3]
+        defect_type = str(r[5]).strip()  # sebelumnya r[4]
+        image_name = str(r[6]).strip()  # sebelumnya r[5]
+        position = str(r[7]).strip()  # sebelumnya r[6]
+
+        op_nama = str(r[8]).strip()
+        op_nipp = str(r[9]).strip()
+        ppj_nama = str(r[10]).strip()
+        ppj_nipp = str(r[11]).strip()
+        petak = str(r[12]).strip()
+        daop = str(r[13]).strip()
+        kpj = str(r[14]).strip()
+
+        if not operator_info:
+            date_val, _ = _parse_datetime(time_raw)
+            operator_info = {
+                "Hari/Tanggal": _get_indonesian_date(date_val),
+                "Operator": op_nama if op_nama != "-" else "-",
+                "NIPP Operator": op_nipp,
+                "PPJ": ppj_nama,
+                "NIPP PPJ": ppj_nipp,
+                "Petak Jalan": petak,
+                "Daop/Divre": daop,
+                "Nomor KPJ": kpj,
+            }
+
+        if defect_type and defect_type not in ("-", "", "nan") and mode in records:
+            lat, lon = _parse_gps(gps_raw)
+            records[mode].append(
+                {
+                    "Latitude": lat,
+                    "Longitude": lon,
+                    "KM HM": km_hm if km_hm not in ("-", "", "nan") else "-",
+                    "Accuracy": accuracy,
+                    "Defect Type": defect_type,
+                    "Image": image_name,
+                    "POSITION": position,
+                }
+            )
+
+    dfs = {}
+    for m, data in records.items():
+        df = pd.DataFrame(data, columns=out_cols)
+        if not df.empty:
+            df.insert(0, "No", range(1, len(df) + 1))
+        dfs[m] = df
+
+    return dfs, operator_info
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN CLASS
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class ImageSaverProcess(Process):
-    ...
-    """
-    Proses terpisah untuk menyimpan gambar dan log data ke CSV/Excel.
-    Komunikasi via multiprocessing.Queue (tidak ada PyQtSignal).
-
-    Task queue format: (task_type, data)
-      - ("image",    (img_rgb: np.ndarray, filename: str))
-      - ("data_log", row_data: dict)
-      - ("export",   None)
-      - ("stop",     None)
-
-    CSV yang ditulis menggunakan CSV_COLUMNS di atas.
-    Saat export, data CSV diperbaiki kolom-kolomnya lalu disimpan ke Excel
-    dengan format plain putih dan GPS merged header.
-    """
-
     def __init__(self, task_queue: Queue, save_dir: str = "./defect"):
         super().__init__(daemon=True, name="ImageSaverProcess")
         self.task_queue = task_queue
@@ -560,7 +625,8 @@ class ImageSaverProcess(Process):
         self.csv_buffer: list[dict] = []
         self.BUFFER_LIMIT = 5
 
-    # ── lifecycle ─────────────────────────────────────────────────────────────
+        # Akumulator Tally Fastener
+        self.fastener_totals = {"DE-Clip": 0, "E-Clip": 0, "KA-Clip": 0, "No Clip": 0}
 
     def run(self):
         os.makedirs(self.save_dir, exist_ok=True)
@@ -574,6 +640,9 @@ class ImageSaverProcess(Process):
                     self._save_image(data)
                 elif task_type == "data_log":
                     self._process_log_data(data)
+                elif task_type == "fastener_tally":  # Terima tally dari worker
+                    for k, v in data.items():
+                        self.fastener_totals[k] = self.fastener_totals.get(k, 0) + v
                 elif task_type == "export":
                     self._export_csv_to_excel()
                 elif task_type == "stop":
@@ -581,12 +650,9 @@ class ImageSaverProcess(Process):
                     log.info("ImageSaverProcess berhenti.")
                     break
             except Exception:
-                continue  # queue timeout — lanjut
-
-    # ── CSV ───────────────────────────────────────────────────────────────────
+                continue
 
     def _init_csv(self):
-        """Buat file CSV kosong dengan header jika belum ada."""
         if not os.path.exists(self.temp_csv):
             pd.DataFrame(columns=CSV_COLUMNS).to_csv(self.temp_csv, index=False)
 
@@ -606,8 +672,6 @@ class ImageSaverProcess(Process):
         except Exception as e:
             log.error(f"Gagal tulis CSV: {e}")
 
-    # ── image ─────────────────────────────────────────────────────────────────
-
     def _save_image(self, data):
         img_rgb, filename = data
         try:
@@ -615,12 +679,8 @@ class ImageSaverProcess(Process):
         except Exception as e:
             log.error(f"Gagal save image: {e}")
 
-    # ── Excel export ──────────────────────────────────────────────────────────
-
     def _export_csv_to_excel(self):
-        """Export ke Excel dengan format korporat: Judul, Logo, Info Operator, dan Tabel Data."""
         self._flush_buffer_to_csv()
-
         if not os.path.exists(self.temp_csv):
             log.warning("Tidak ada data CSV untuk diexport.")
             return
@@ -630,28 +690,18 @@ class ImageSaverProcess(Process):
             if not raw_rows:
                 return
 
-            df, op_info = _build_output_df(raw_rows)
-            n_cols = len(df.columns)
-
-            # --- KONFIGURASI BARIS EXCEL ---
-            # Tabel akan dimulai di baris ke-13 (indeks 12)
+            dfs, op_info = _build_output_dfs(raw_rows)
             TABLE_START_ROW = 12
 
+            sheet_mapping = {
+                "segformer": ("Rail Defect", "Defect Type"),
+                "yolo": ("Fastener", "Fastener"),
+                "yolo_ballast": ("Ballast", "Ballast Type"),
+            }
+
             with pd.ExcelWriter(self.final_excel, engine="xlsxwriter") as writer:
-                df.to_excel(
-                    writer,
-                    index=False,
-                    sheet_name="Laporan Inspeksi",
-                    startrow=TABLE_START_ROW,
-                    header=False,
-                )
-
                 workbook = writer.book
-                worksheet = writer.sheets["Laporan Inspeksi"]
 
-                # ==========================================
-                # STYLE FORMATTING
-                # ==========================================
                 title_format = workbook.add_format(
                     {
                         "bold": True,
@@ -667,7 +717,6 @@ class ImageSaverProcess(Process):
                 normal_format = workbook.add_format(
                     {"font_size": 10, "font_name": "Arial"}
                 )
-
                 header_format = workbook.add_format(
                     {
                         "bold": True,
@@ -681,7 +730,6 @@ class ImageSaverProcess(Process):
                         "text_wrap": True,
                     }
                 )
-
                 cell_format = workbook.add_format(
                     {
                         "align": "center",
@@ -693,89 +741,122 @@ class ImageSaverProcess(Process):
                     }
                 )
 
-                # ==========================================
-                # BAGIAN ATAS (KOP SURAT)
-                # ==========================================
-                worksheet.merge_range("A1:H1", "Defect Detection Report", title_format)
-                worksheet.set_row(0, 30)
+                for mode, df in dfs.items():
+                    if df.empty and mode != "yolo":
+                        continue  # Skip sheet kosong kecuali YOLO (karena kita butuh cetak summary)
 
-                try:
-                    worksheet.insert_image(
-                        "H1",
-                        "icon_100_/logo_kai.png",
-                        {"x_scale": 0.1, "y_scale": 0.1, "x_offset": 10, "y_offset": 5},
+                    sheet_title, defect_col_name = sheet_mapping[mode]
+
+                    if not df.empty:
+                        df.rename(
+                            columns={"Defect Type": defect_col_name}, inplace=True
+                        )
+                    else:
+                        df = pd.DataFrame(
+                            columns=[
+                                "No",
+                                "Latitude",
+                                "Longitude",
+                                "KM HM",
+                                "Accuracy",
+                                defect_col_name,
+                                "Image",
+                                "POSITION",
+                            ]
+                        )
+
+                    n_cols = len(df.columns)
+                    df.to_excel(
+                        writer,
+                        index=False,
+                        sheet_name=sheet_title,
+                        startrow=TABLE_START_ROW,
+                        header=False,
                     )
-                except Exception as e:
-                    pass
+                    worksheet = writer.sheets[sheet_title]
 
-                # 3. Baris 1: Hari/Tanggal (Kiri) & Daop/Divre (Kanan)
-                worksheet.write("A3", "Hari / Tanggal", bold_format)
-                worksheet.write(
-                    "B3", f": {op_info.get('Hari/Tanggal', '-')}", normal_format
-                )
+                    # --- KOP SURAT ---
+                    worksheet.merge_range(
+                        "A1:H1", f"{sheet_title} Detection Report", title_format
+                    )
+                    worksheet.set_row(0, 30)
+                    try:
+                        worksheet.insert_image(
+                            "H1",
+                            "icon_100_/logo_kai.png",
+                            {
+                                "x_scale": 0.1,
+                                "y_scale": 0.1,
+                                "x_offset": 10,
+                                "y_offset": 5,
+                            },
+                        )
+                    except Exception:
+                        pass
 
-                worksheet.write("A5", "Daop / Divre", bold_format)
-                worksheet.write(
-                    "B5", f": {op_info.get('Daop/Divre', '-')}", normal_format
-                )
+                    worksheet.write("A3", "Hari / Tanggal", bold_format)
+                    worksheet.write(
+                        "B3", f": {op_info.get('Hari/Tanggal', '-')}", normal_format
+                    )
+                    worksheet.write("A5", "Daop / Divre", bold_format)
+                    worksheet.write(
+                        "B5", f": {op_info.get('Daop/Divre', '-')}", normal_format
+                    )
+                    worksheet.write("F5", "Operator", bold_format)
+                    worksheet.write(
+                        "G5", f": {op_info.get('Operator', '-')}", normal_format
+                    )
+                    worksheet.write("A4", "Petak Jalan", bold_format)
+                    worksheet.write(
+                        "B4", f": {op_info.get('Petak Jalan', '-')}", normal_format
+                    )
+                    worksheet.write("H5", "NIPP", bold_format)
+                    worksheet.write(
+                        "I5", f": {op_info.get('NIPP Operator', '-')}", normal_format
+                    )
+                    worksheet.write("F3", "Nomor KPJ", bold_format)
+                    worksheet.write(
+                        "G3", f": {op_info.get('Nomor KPJ', '-')}", normal_format
+                    )
+                    worksheet.write("F4", "PPJ", bold_format)
+                    worksheet.write("G4", f": {op_info.get('PPJ', '-')}", normal_format)
+                    worksheet.write("H4", "NIPP", bold_format)
+                    worksheet.write(
+                        "I4", f": {op_info.get('NIPP PPJ', '-')}", normal_format
+                    )
 
-                # 4. Baris 2: Operator (Kiri) & Petak Jalan (Kanan)
-                worksheet.write("F5", "Operator", bold_format)
-                worksheet.write(
-                    "G5", f": {op_info.get('Operator', '-')}", normal_format
-                )
+                    # --- TABEL ---
+                    col_widths = [5, 13, 13, 10, 10, 20, 28, 10]
+                    for col_idx, width in enumerate(col_widths):
+                        worksheet.set_column(col_idx, col_idx, width, cell_format)
 
-                worksheet.write("A4", "Petak Jalan", bold_format)
-                worksheet.write(
-                    "B4", f": {op_info.get('Petak Jalan', '-')}", normal_format
-                )
+                    worksheet.merge_range(10, 1, 10, 2, "GPS", header_format)
+                    for col_idx in range(n_cols):
+                        if col_idx not in (1, 2):
+                            worksheet.write(10, col_idx, "", header_format)
+                        worksheet.write(11, col_idx, df.columns[col_idx], header_format)
 
-                # 5. Baris 3: NIPP Operator (Kiri) & Nomor KPJ (Kanan)
-                worksheet.write("H5", "NIPP", bold_format)
-                worksheet.write(
-                    "I5", f": {op_info.get('NIPP Operator', '-')}", normal_format
-                )
+                    worksheet.set_row(10, 18)
+                    worksheet.set_row(11, 20)
+                    worksheet.freeze_panes(12, 0)
 
-                worksheet.write("F3", "Nomor KPJ", bold_format)
-                worksheet.write(
-                    "G3", f": {op_info.get('Nomor KPJ', '-')}", normal_format
-                )
+                    # --- SUMMARY FASTENER ---
+                    if mode == "yolo":
+                        last_row = TABLE_START_ROW + len(df) + 2
+                        worksheet.write(
+                            last_row, 1, "TOTAL CLASS FASTENER", bold_format
+                        )
 
-                # 6. Baris 4 & 5: PPJ & NIPP PPJ (Hanya di Kiri)
-                worksheet.write("F4", "PPJ", bold_format)
-                worksheet.write("G4", f": {op_info.get('PPJ', '-')}", normal_format)
+                        r_idx = last_row + 1
+                        grand_total = 0
+                        for k, v in self.fastener_totals.items():
+                            worksheet.write(r_idx, 1, k, normal_format)
+                            worksheet.write(r_idx, 2, v, normal_format)
+                            grand_total += v
+                            r_idx += 1
 
-                worksheet.write("H4", "NIPP", bold_format)
-                worksheet.write(
-                    "I4", f": {op_info.get('NIPP PPJ', '-')}", normal_format
-                )
-                # ==========================================
-                # TABEL DATA
-                # ==========================================
-                # Atur lebar kolom untuk 8 kolom (No, Lat, Lon, KM, Acc, Defect, Img, Pos)
-                col_widths = [5, 13, 13, 10, 10, 20, 28, 10]
-                for col_idx, width in enumerate(col_widths):
-                    worksheet.set_column(col_idx, col_idx, width, cell_format)
-
-                # Header Tabel Baris 1 (Row index 10)
-                # GPS (Lat & Lon) sekarang ada di index kolom 1 & 2
-                worksheet.merge_range(10, 1, 10, 2, "GPS", header_format)
-
-                for col_idx in range(n_cols):
-                    if col_idx not in (
-                        1,
-                        2,
-                    ):  # Jika bukan bagian dari Latitude/Longitude
-                        worksheet.write(10, col_idx, "", header_format)
-
-                    # Sub Header Tabel Baris 2 (Row index 11)
-                    worksheet.write(11, col_idx, df.columns[col_idx], header_format)
-
-                worksheet.set_row(10, 18)
-                worksheet.set_row(11, 20)
-
-                # Freeze Panes (agar header tidak hilang saat di-scroll)
-                worksheet.freeze_panes(12, 0)
+                        worksheet.write(r_idx, 1, "Total Detection", bold_format)
+                        worksheet.write(r_idx, 2, grand_total, bold_format)
 
             log.info(f"Data Excel berhasil dibuat: {self.final_excel}")
 
@@ -784,28 +865,16 @@ class ImageSaverProcess(Process):
 
     @staticmethod
     def _parse_raw_csv(filepath: str) -> list:
-        """
-        Baca CSV baris per baris via csv.reader agar quoted commas
-        (contoh: "Corrugations, Squat") tidak memecah kolom.
-        Return list of rows tanpa header.
-        """
         rows = []
         with open(filepath, newline="", encoding="utf-8-sig") as f:
             reader = csv.reader(f)
-            next(reader)  # skip header
+            next(reader)
             for row in reader:
                 if len(row) == 1:
-                    # baris terbungkus kutip ganda ekstra — parse ulang
                     inner = row[0].strip().strip('"')
                     row = list(csv.reader([inner]))[0]
                 rows.append(row)
         return rows
-
-    # ── public helper ─────────────────────────────────────────────────────────
-
-    def add_task(self, task_type: str, data=None):
-        """Helper untuk mengirim task dari proses lain."""
-        self.task_queue.put((task_type, data))
 
 
 # ============================================================================
@@ -941,111 +1010,269 @@ class CameraReaderProcess(Process):
 # ============================================================================
 # CLASS 4.5 — GPSReaderProcess (BARU)
 # ============================================================================
-
-
 class GPSReaderProcess(Process):
     """
-    Proses mandiri untuk membaca modul GPS via Serial Port.
-    Berjalan independen dari model AI sehingga status GPS selalu terkirim.
+    Proses mandiri pembacaan GPS + Map Matching ke Jalur Rel.
+    Mendukung Mode Hardware (Serial Port) dan Mode Simulasi.
     """
 
     def __init__(
         self,
         broadcast_queue: Queue,
         internal_gps_queue: Queue,
+        feather_path="./segments_processed.feather",
         port="/dev/ttyTHS1",
         baudrate=9600,
+        simulation_mode=True,  # SET KE TRUE UNTUK TESTING
+        sim_speed_kmh=40.0,  # Kecepatan simulasi kereta
+        sim_noise_meters=5.0,  # Injeksi error GPS pada simulasi
+        sim_max_km=5,  # Jarak maksimum simulasi
     ):
         super().__init__(daemon=True, name="GPSReaderProcess")
         self.broadcast_queue = broadcast_queue
         self.internal_gps_queue = internal_gps_queue
+        self.feather_path = feather_path
         self.port = port
         self.baudrate = baudrate
 
-    def run(self):
+        # Konfigurasi Simulasi
+        self.simulation_mode = simulation_mode
+        self.sim_speed_kmh = sim_speed_kmh
+        self.sim_noise_meters = sim_noise_meters
+        self.sim_max_km = sim_max_km
+
+        # Konfigurasi Toleransi Map Matching
+        self.MAX_DRIFT_METERS = 15.0
+        self.MAX_JUMP_METERS = 200.0
+        self.DEG_TO_METERS = 111320.0
+
+    def _get_distance_to_segment(self, px, py, x1, y1, x2, y2):
+        """Menghitung jarak tegak lurus dari titik GPS ke ruas rel."""
+        p = np.array([px, py])
+        a = np.array([x1, y1])
+        b = np.array([x2, y2])
+        line_vec = b - a
+        p_vec = p - a
+        line_len_sq = np.dot(line_vec, line_vec)
+
+        if line_len_sq == 0:
+            return np.linalg.norm(p - a) * self.DEG_TO_METERS
+
+        t = max(0, min(1, np.dot(p_vec, line_vec) / line_len_sq))
+        projection = a + t * line_vec
+        dist_deg = np.linalg.norm(p - projection)
+        return dist_deg * self.DEG_TO_METERS
+
+    # ==========================================
+    # DATA SOURCE 1: HARDWARE GENERATOR
+    # ==========================================
+    def _hardware_stream(self):
         import serial
         import pynmea2
-        import time
-        import queue
-
-        log.info(f"GPSReaderProcess dimulai. Menunggu sinyal di {self.port}...")
 
         while True:
             try:
-                # Buka koneksi serial
                 with serial.Serial(self.port, self.baudrate, timeout=1) as ser:
                     while True:
                         line = ser.readline().decode("ascii", errors="replace").strip()
-
-                        # Filter untuk GPGGA (GPS biasa) atau GNGGA (GNSS multi-satelit)
                         if line.startswith("$GPGGA") or line.startswith("$GNGGA"):
                             try:
                                 msg = pynmea2.parse(line)
-
-                                # Cek apakah satelit sudah terkunci (Kualitas > 0)
                                 if msg.gps_qual > 0:
-                                    lat = f"{msg.latitude:.6f}"
-                                    lon = f"{msg.longitude:.6f}"
-                                    gps_text = f"Latitude: {lat}\nLongitude: {lon}"
-
-                                    # 1. Kirim ke Frontend untuk update UI Real-time
-                                    try:
-                                        self.broadcast_queue.put_nowait(
-                                            {
-                                                "type": "gps_status",
-                                                "status": "fixed",
-                                                "lat": lat,
-                                                "lon": lon,
-                                            }
-                                        )
-                                    except queue.Full:
-                                        pass
-
-                                    # 2. Kirim ke internal queue untuk dicatat BatchWorker ke CSV
-                                    # Kosongkan queue lama agar selalu mendapat data paling fresh
-                                    while not self.internal_gps_queue.empty():
-                                        try:
-                                            self.internal_gps_queue.get_nowait()
-                                        except queue.Empty:
-                                            break
-                                    self.internal_gps_queue.put_nowait(gps_text)
-
+                                    yield {
+                                        "type": "valid",
+                                        "lat": msg.latitude,
+                                        "lon": msg.longitude,
+                                    }
                                 else:
-                                    # Belum terkunci (masih mencari satelit)
-                                    try:
-                                        self.broadcast_queue.put_nowait(
-                                            {
-                                                "type": "gps_status",
-                                                "status": "searching",
-                                                "message": "GPS: Mencari Satelit (Pastikan Open Sky)...",
-                                            }
-                                        )
-                                    except queue.Full:
-                                        pass
-
+                                    yield {
+                                        "type": "searching",
+                                        "msg": "Mencari Satelit...",
+                                    }
                             except pynmea2.ParseError:
-                                pass  # Abaikan jika ada baris NMEA yang terpotong/rusak
-
+                                pass
             except serial.SerialException as e:
-                # Jika port tidak ditemukan atau akses ditolak
-                log.error(
-                    f"Error port serial GPS ({self.port}): {e}. Retrying dalam 3 detik..."
-                )
+                yield {"type": "error", "msg": f"Port {self.port} error: {e}"}
+                time.sleep(3)
+            except Exception as e:
+                log.error(f"Hardware Stream Error: {e}")
+                time.sleep(3)
+
+    # ==========================================
+    # DATA SOURCE 2: SIMULATOR GENERATOR
+    # ==========================================
+    def _simulator_stream(self, df):
+        target_route = df["route"].iloc[0]
+        track = df[df["route"] == target_route].copy()
+        log.info(f"Mulai Simulasi di rute {target_route}")
+
+        speed_mps = self.sim_speed_kmh * (1000 / 3600)
+        waypoints = []
+
+        for _, row in track.iterrows():
+            waypoints.append((row["x1"], row["y1"]))
+            try:
+                end_km_str = row["range"].split("/")[1].replace("+", "")
+                if int(end_km_str) >= self.sim_max_km * 1000:
+                    waypoints.append((row["x2"], row["y2"]))
+                    break
+            except:
+                pass
+
+        if not waypoints:
+            yield {"type": "error", "msg": "Data simulasi kosong."}
+            return
+
+        for i in range(len(waypoints) - 1):
+            start_lon, start_lat = waypoints[i]
+            end_lon, end_lat = waypoints[i + 1]
+
+            dist_deg = math.hypot(end_lon - start_lon, end_lat - start_lat)
+            dist_m = dist_deg * self.DEG_TO_METERS
+            if dist_m == 0:
+                continue
+
+            travel_time = dist_m / speed_mps
+            steps = max(1, int(travel_time))
+
+            lon_step = (end_lon - start_lon) / steps
+            lat_step = (end_lat - start_lat) / steps
+
+            for step in range(steps):
+                ideal_lon = start_lon + (lon_step * step)
+                ideal_lat = start_lat + (lat_step * step)
+
+                # Injeksi Drift
+                drift_angle = random.uniform(0, 2 * math.pi)
+                drift_dist = random.uniform(0, self.sim_noise_meters)
+                drift_deg = drift_dist / self.DEG_TO_METERS
+
+                noisy_lon = ideal_lon + (math.cos(drift_angle) * drift_deg)
+                noisy_lat = ideal_lat + (math.sin(drift_angle) * drift_deg)
+
+                yield {"type": "valid", "lat": noisy_lat, "lon": noisy_lon}
+                time.sleep(1)  # Delay 1 detik per koordinat
+
+        yield {"type": "error", "msg": "Simulasi selesai mencapai batas Max KM."}
+        while True:
+            time.sleep(10)  # Tahan proses agar tidak crash setelah simulasi selesai
+
+    # ==========================================
+    # FUNGSI UTAMA (MAP MATCHING LOGIC)
+    # ==========================================
+    def run(self):
+        log.info(f"GPSReaderProcess: Memuat data rute dari {self.feather_path}...")
+        try:
+            df = pd.read_feather(self.feather_path)
+            kdtree = KDTree(df[["mid_x", "mid_y"]].values)
+            log.info("GPSReaderProcess: k-d Tree siap.")
+        except Exception as e:
+            log.error(f"Gagal memuat file rel: {e}.")
+            return
+
+        # Tentukan sumber data
+        if self.simulation_mode:
+            log.info(f"SIMULATION MODE AKTIF (Noise: {self.sim_noise_meters}m)")
+            gps_source = self._simulator_stream(df)
+        else:
+            log.info("HARDWARE MODE AKTIF")
+            gps_source = self._hardware_stream()
+
+        last_valid_point = None
+        last_valid_time = 0
+
+        # Loop pemrosesan tunggal
+        for data in gps_source:
+            current_time = time.time()
+
+            # Jika GPS belum fix atau ada error port/simulasi
+            if data["type"] != "valid":
+                payload = {
+                    "type": "gps_status",
+                    "status": "searching" if data["type"] == "searching" else "error",
+                    "message": data["msg"],
+                    "lat": None,
+                    "lon": None,
+                    "km_range": "N/A",
+                }
                 try:
-                    self.broadcast_queue.put_nowait(
-                        {
-                            "type": "gps_status",
-                            "status": "searching",
-                            "message": f"Error GPS: Port {self.port} tidak dapat diakses.",
-                        }
-                    )
+                    self.broadcast_queue.put_nowait(payload)
                 except queue.Full:
                     pass
-                time.sleep(3)  # Tunggu sebelum mencoba koneksi ulang
+                continue
 
-            except Exception as e:
-                log.error(f"Error tak terduga pada GPSReaderProcess: {e}")
-                time.sleep(3)
+            # Jika koordinat valid, lakukan Map Matching
+            lat, lon = data["lat"], data["lon"]
+
+            _, indices = kdtree.query([lon, lat], k=3)
+            best_match = None
+            min_dist = float("inf")
+
+            for idx in indices:
+                row = df.iloc[idx]
+                dist_m = self._get_distance_to_segment(
+                    lon, lat, row["x1"], row["y1"], row["x2"], row["y2"]
+                )
+                if dist_m < min_dist:
+                    min_dist = dist_m
+                    best_match = row
+
+            is_valid = False
+            status_msg = "off_track"
+            km_data = "N/A"
+
+            # Validasi Buffer Zone
+            if min_dist <= self.MAX_DRIFT_METERS:
+                # Validasi Temporal Check
+                if last_valid_point is not None:
+                    time_diff = current_time - last_valid_time
+                    jump_dist = (
+                        np.linalg.norm(
+                            [lon - last_valid_point[0], lat - last_valid_point[1]]
+                        )
+                        * self.DEG_TO_METERS
+                    )
+                    if jump_dist / max(time_diff, 0.1) > self.MAX_JUMP_METERS:
+                        status_msg = "anomalous_jump"
+                    else:
+                        is_valid = True
+                else:
+                    is_valid = True
+
+            if is_valid:
+                status_msg = "locked"
+                km_data = best_match["range"]
+                last_valid_point = (lon, lat)
+                last_valid_time = current_time
+
+            # Distribusikan Hasil
+            payload = {
+                "status": status_msg,
+                "lat": lat,
+                "lon": lon,
+                "route": best_match["route"] if best_match is not None else "N/A",
+                "track": best_match["track"] if best_match is not None else "N/A",
+                "km_range": km_data,
+                "cross_track_error_m": round(min_dist, 2),
+            }
+
+            try:
+                self.broadcast_queue.put_nowait({"type": "gps_status", **payload})
+            except queue.Full:
+                pass
+
+            while not self.internal_gps_queue.empty():
+                try:
+                    self.internal_gps_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self.internal_gps_queue.put_nowait(payload)
+
+            # Print opsional untuk memonitor di terminal saat testing
+            # if self.simulation_mode:
+            #     print(
+            #         f"[SIM] Error: {min_dist:.2f}m | Status: {status_msg} | KM: {km_data}"
+            #     )
 
 
 # ============================================================================
@@ -1102,9 +1329,16 @@ class BatchWorkerProcess(Process):
         # Valid values: "segformer" | "yolo" | "standby"
         active_model = "standby"
 
-        current_gps_string = "GPS: Menunggu satelit..."
+        # current_gps_string = "GPS: Menunggu satelit..."
         # "GPS": "Latitude: -6.975971\nLongitude: 107.629658",
         # current_gps_string = "Latitude: N/A\nLongitude:N/A"
+
+        current_gps_data = {
+            "lat": None,
+            "lon": None,
+            "km_range": "N/A",
+            "status": "searching",
+        }
 
         current_threshold = self.threshold_queue
         operator_logged = False
@@ -1119,6 +1353,8 @@ class BatchWorkerProcess(Process):
                     log.info(
                         "UI meminta Ekspor: Perintah diteruskan ke ImageSaverProcess"
                     )
+                if action == "poweroff":
+                    log.info("device akan dimatikan")
                 elif action == "set_threshold":
                     current_threshold = int(cmd.get("value", 1))
                 elif action == "operator_settings":
@@ -1143,7 +1379,7 @@ class BatchWorkerProcess(Process):
                 continue
 
             try:
-                current_gps_string = self.internal_gps_queue.get_nowait()
+                current_gps_data = self.internal_gps_queue.get_nowait()
             except Exception:
                 pass
 
@@ -1179,7 +1415,7 @@ class BatchWorkerProcess(Process):
                         yolo_ballast_model,
                         device,
                         active_model,
-                        current_gps_string,  # PASSING DATA GPS KE FUNGSI INI
+                        current_gps_data,  # PASSING DATA GPS KE FUNGSI INI
                         current_threshold,
                         operator_logged,
                     )
@@ -1227,7 +1463,7 @@ class BatchWorkerProcess(Process):
         yolo_ballast_model,
         device,
         active_model,
-        current_gps_string,
+        current_gps_data,
         current_threshold,
         operator_logged,
     ):
@@ -1289,12 +1525,23 @@ class BatchWorkerProcess(Process):
             # Jika sudah pernah disimpan, kosongkan datanya
             op_nama = op_nipp = ppj_nama = ppj_nipp = petak = daop = kpj = ""
 
+        # Konstruksi GPS string untuk broadcast UI (tetap string)
+        lat = current_gps_data.get("lat")
+        lon = current_gps_data.get("lon")
+        km_range = current_gps_data.get("km_range", "N/A")
+
+        if lat is not None and lon is not None:
+            gps_str = f"Latitude: {lat}\nLongitude: {lon}"
+        else:
+            gps_str = "GPS: Menunggu satelit..."
+
         # 1. Template Dasar (Base Info yang selalu sama untuk kiri/kanan)
         base_log_data = {
+            "Mode": active_model,  # TAMBAHKAN INI
             "Time": timestamp,
-            "GPS": current_gps_string,
+            "GPS": gps_str,
+            "KM HM": km_range if km_range != "N/A" else "-",
             "Accuracy": "0",
-            # Defect Type, Image, dan Position akan diisi nanti di dalam loop
             "Defect Type": "-",
             "Image": "-",
             "Position": "-",
@@ -1410,6 +1657,7 @@ class BatchWorkerProcess(Process):
             )
             frame_b64 = base64.b64encode(buf).decode("utf-8")
 
+            # Data yg dikirim ke ui
             broadcast_msgs.append(
                 {
                     "type": "frame" if active_model == "segformer" else "frame_yolo",
@@ -1420,29 +1668,63 @@ class BatchWorkerProcess(Process):
                     "gps": base_log_data["GPS"],
                     "detected_classes": detected_classes,
                     "timestamp": timestamp,
+                    "accuracy": f"{acc:.4f}",
                     "inspection": clip_counts
                     if active_model == "yolo"
                     else ballast_counts,
                 }
             )
 
-            # 2. BENTUK LOG DATA SPESIFIK UNTUK SISI INI (JIKA ADA DETEKSI)
-            if total_contours_all > 0:
-                # Copy base info agar aman dari reference manipulation
-                current_log = base_log_data.copy()
+            # ==========================================
+            # 2. LOGIKA PEMBENTUKAN DATA CSV BERDASARKAN MODE
+            # ==========================================
+            filename = f"{timestamp}_cam{camera_id}.jpg"
 
-                defect_type_str = ", ".join(c["name"] for c in detected_classes)
-                filename = f"{timestamp}_cam{camera_id}.jpg"
+            if active_model == "yolo":
+                # KITA HARUS MENGHITUNG SEMUA KE SAVER PROCESS SEKARANG
+                # Jangan simpan di file list `images_to_save` biasa, tapi passing tally-nya
+                # Karena _process_batch melempar balik array, lebih mudah langsung put() ke saver_queue
+                # (pastikan self.saver_queue ada di dalam __init__ BatchWorkerProcess Anda)
+                if hasattr(self, "saver_queue"):
+                    self.saver_queue.put_nowait(("fastener_tally", clip_counts))
 
-                # Update data spesifik
-                current_log["Defect Type"] = defect_type_str
-                current_log["Image"] = filename
-                current_log["Position"] = side
-                current_log["Accuracy"] = f"{acc:.4f}"
+                # HANYA SIMPAN BARIS JIKA ADA LOSS (No Clip)
+                if clip_counts["No Clip"] > 0:
+                    current_log = base_log_data.copy()
+                    current_log["Defect Type"] = "loss"
+                    current_log["Image"] = filename
+                    current_log["Position"] = side
+                    current_log["Accuracy"] = f"{acc:.4f}"
+                    logs_to_save.append(current_log)
+                    images_to_save.append((final_output_bgr, f"fastener_{filename}"))
 
-                # Simpan ke list
-                logs_to_save.append(current_log)
-                images_to_save.append((final_output_bgr, filename))
+            elif active_model == "yolo_ballast":
+                detected_ballast = []
+                if ballast_counts["Mud Pumping"] > 0:
+                    detected_ballast.append("Mud Pumping")
+                if ballast_counts["White Ballast"] > 0:
+                    detected_ballast.append("White Ballast")
+
+                if detected_ballast:
+                    current_log = base_log_data.copy()
+                    current_log["Defect Type"] = ", ".join(detected_ballast)
+                    current_log["Image"] = filename
+                    current_log["Position"] = side
+                    current_log["Accuracy"] = f"{acc:.4f}"
+                    logs_to_save.append(current_log)
+                    images_to_save.append((final_output_bgr, f"ballast_{filename}"))
+
+            elif active_model == "segformer":
+                if total_contours_all > 0:
+                    current_log = base_log_data.copy()
+                    current_log["Defect Type"] = ", ".join(
+                        c["name"] for c in detected_classes
+                    )
+                    current_log["Image"] = filename
+                    current_log["Position"] = side
+                    current_log["Accuracy"] = f"{acc:.4f}"
+                    logs_to_save.append(current_log)
+                    images_to_save.append((final_output_bgr, f"defect_{filename}"))
 
             # Rekap untuk status akhir (di luar loop)
             if side == "Left":
@@ -1607,8 +1889,8 @@ if __name__ == "__main__":
     main(
         # cam1_source="/dev/cam_kiri",
         # cam2_source="/dev/cam_kanan",
-        cam1_source="../../combine-app/kiri2.mp4",
-        cam2_source="../../combine-app/kanan2.mp4",
+        cam1_source="../kiri2.mp4",
+        cam2_source="../kanan2.mp4",
         web_host="0.0.0.0",
         web_port=8000,
     )
