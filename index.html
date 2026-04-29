@@ -601,7 +601,7 @@
                 ws.send(JSON.stringify(command));
                 console.log("Perintah ekspor dikirim ke server...");
                 // alert("Data sedang di eksport ke excel")
-                showToast('export', 'Data is being exported to Excel', 'info');
+                // showToast('export', 'Data is being exported to Excel', 'info');
             } else {
                 alert("Koneksi server terputus!");
             }
@@ -625,6 +625,25 @@
                     if (msg.type === 'frame') renderFrameData(msg);
                     else if (msg.type === 'frame_yolo') renderYoloFrameData(msg);
                     // else if (msg.type === 'log') renderLogData(msg);
+                    else if (msg.type === 'export_ready') {
+                        // Sembunyikan alert atau loading (jika Anda membuatnya)
+                        console.log("File siap diunduh:", msg.filepath);
+                        
+                        // Buat elemen link virtual dan paksa browser untuk mengkliknya
+                        const a = document.createElement('a');
+                        a.href = `/download?filepath=${encodeURIComponent(msg.filepath)}`;
+
+                        let today = new Date();
+                        let formattedDate = today.toISOString().split('T')[0];
+
+                        a.download = `Laporan inspeksi ${formattedDate}.xlsx`; 
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        
+                        showToast('ekspor', 'Export Complete! Files are being downloaded.', 'info')
+                        setTimeout(() => hideToast('ekspor'), 3000);
+                    }
                     else if (msg.type === 'gps_status') {
                         if (msg.status === 'searching') showToast('gps-status', msg.message, 'warning');
                         else if (msg.status === 'locked') {

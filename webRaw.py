@@ -236,6 +236,17 @@ class WebServer:
             self.control_queue.put_nowait(payload)
             return {"status": "ok", "received": payload}
 
+        @app.get("/download")
+        async def download_report(filepath: str):
+            """Endpoint HTTP murni untuk melayani file Excel."""
+            if os.path.exists(filepath):
+                return FileResponse(
+                    filepath,
+                    filename="Laporan inspeksi.xlsx",
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            return {"error": "File tidak ditemukan atau belum selesai digenerate."}
+
     def run(self):
         """Jalankan server di main process (blocking)."""
         uvicorn.run(self.app, host=self.host, port=self.port, log_level="warning")
@@ -616,9 +627,12 @@ def _build_output_dfs(raw_rows: list) -> tuple:
 
 
 class ImageSaverProcess(Process):
-    def __init__(self, task_queue: Queue, save_dir: str = "./defect"):
+    def __init__(
+        self, task_queue: Queue, broadcast_queue: Queue, save_dir: str = "./defect"
+    ):
         super().__init__(daemon=True, name="ImageSaverProcess")
         self.task_queue = task_queue
+        self.broadcast_queue = broadcast_queue
         self.save_dir = f"{save_dir}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}"
         self.temp_csv = os.path.join(self.save_dir, "temp_session_data.csv")
         self.final_excel = os.path.join(self.save_dir, "laporan_kerusakan.xlsx")
@@ -859,6 +873,12 @@ class ImageSaverProcess(Process):
                         worksheet.write(r_idx, 2, grand_total, bold_format)
 
             log.info(f"Data Excel berhasil dibuat: {self.final_excel}")
+            try:
+                self.broadcast_queue.put_nowait(
+                    {"type": "export_ready", "filepath": self.final_excel}
+                )
+            except Exception as e:
+                log.error(f"Gagal mengirim sinyal export_ready: {e}")
 
         except Exception as e:
             log.error(f"Gagal Export Excel: {e}")
@@ -1350,9 +1370,6 @@ class BatchWorkerProcess(Process):
                 action = cmd.get("action", "")
                 if action == "export":
                     self.saver_queue.put(("export", None))
-                    log.info(
-                        "UI meminta Ekspor: Perintah diteruskan ke ImageSaverProcess"
-                    )
                 if action == "poweroff":
                     log.info("device akan dimatikan")
                 elif action == "set_threshold":
@@ -1815,7 +1832,7 @@ def main(
     master_ctrl = Queue(maxsize=20)
 
     # --- Proses ---
-    saver = ImageSaverProcess(saver_queue, "./data_defect/defect")
+    saver = ImageSaverProcess(saver_queue, broadcast_queue, "./data_defect/defect")
     gps_reader = GPSReaderProcess(broadcast_queue, internal_gps_queue)
 
     cam1 = CameraReaderProcess(1, cam1_source, frame_queue, ctrl_cam1, broadcast_queue)
